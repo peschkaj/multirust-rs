@@ -225,6 +225,7 @@ impl TelemetryAnalysis {
                         updated_toolchains_with_errors.push(toolchain.to_owned());
                     }
                 },
+                _ => continue,
             }
         };
 

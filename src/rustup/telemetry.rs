@@ -15,6 +15,7 @@ pub enum TelemetryMode {
 #[derive(RustcDecodable, RustcEncodable, Debug, Clone)]
 pub enum TelemetryEvent {
     RustcRun { duration_ms: u64, exit_code: i32, errors: Option<Vec<String>> },
+    RustcVersion { version: String, version_hash: String, build_date: String },
     ToolchainUpdate { toolchain: String, success: bool } ,
     TargetAdd { toolchain: String, target: String, success: bool },
 }

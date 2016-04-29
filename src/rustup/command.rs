@@ -22,10 +22,74 @@ pub fn run_command_for_dir<S: AsRef<OsStr>>(cmd: Command,
         .and_then(|a| a.to_str());
     let arg0 = try!(arg0.ok_or(ErrorKind::NoExeName));
     if (arg0 == "rustc" || arg0 == "rustc.exe") && cfg.telemetry_enabled() {
+        if (&args).iter().any(|e| {
+            let e = e.as_ref().to_str().unwrap_or("");
+            e == "--version" || e == "-V"
+        }) {
+            return telemetetry_rustc_version(cmd, &args, &cfg);
+        }
+
         return telemetry_rustc(cmd, &args, &cfg);
     }
     
     run_command_for_dir_without_telemetry(cmd, &args)
+}
+
+fn telemetetry_rustc_version<S: AsRef<OsStr>>(mut cmd: Command, args: &[S], cfg: &Cfg) -> Result<()> {
+    cmd.args(&args[1..]);
+
+    let mut cmd = cmd.stdin(Stdio::inherit())
+                     .stdout(Stdio::piped())
+                     .stderr(Stdio::inherit())
+                     .spawn()
+                     .unwrap();
+
+    let mut buffered_stdout = BufReader::new(cmd.stdout.take().unwrap());
+    let status = cmd.wait();
+
+    let t = Telemetry::new(cfg.multirust_dir.join("telemetry"));
+
+    match status {
+        Ok(status) => {
+            let exit_code = status.code().unwrap_or(1);
+
+            let re = Regex::new(r"^\w+ (?P<version>\d+\..*) \((?P<hash>.*) (?P<release>\d{4}-\d{2}-\d{2})").unwrap();
+
+            let mut buffer = String::new();
+
+            let stdout = io::stdout();
+            let mut handle = stdout.lock();
+
+            while buffered_stdout.read_line(&mut buffer).unwrap() > 0 {
+                let b = buffer.to_owned();
+                buffer.clear();
+                let _ = handle.write(b.as_bytes());
+
+                let c = re.captures(&b);
+
+                match c {
+                    None => continue,
+                    Some(caps) => {
+                        if caps.len() > 0 {
+                            let te = TelemetryEvent::RustcVersion { version: caps.name("version").unwrap_or("").to_owned(), 
+                                                                    version_hash: caps.name("hash").unwrap_or("").to_owned(), 
+                                                                    build_date: caps.name("release").unwrap_or("").to_owned() };
+                            let _ = t.log_telemetry(te).map_err(|xe| {
+                                cfg.notify_handler.call(Notification::TelemetryCleanupError(&xe));
+                            });
+                        }
+                    }
+                };
+            }
+
+            process::exit(exit_code);
+        },
+        Err(e) => {
+            Err(e).chain_err(|| rustup_utils::ErrorKind::RunningCommand {
+                name: args[0].as_ref().to_owned(),
+            })
+        },
+    }
 }
 
 fn telemetry_rustc<S: AsRef<OsStr>>(mut cmd: Command, args: &[S], cfg: &Cfg) -> Result<()> {
@@ -57,8 +121,6 @@ fn telemetry_rustc<S: AsRef<OsStr>>(mut cmd: Command, args: &[S], cfg: &Cfg) -> 
             let re = Regex::new(r"\[(?P<error>E.{4})\]").unwrap();
 
             let mut buffer = String::new();
-            // Chose a HashSet instead of a Vec to avoid calls to sort() and dedup().
-            // The HashSet should be faster if there are a lot of errors, too.
             let mut errors: Vec<String> = Vec::new();
 
             let stderr = io::stderr();
